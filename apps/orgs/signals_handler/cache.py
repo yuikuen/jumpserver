@@ -83,6 +83,6 @@ def on_pre_delete_refresh_org_resource_statistics_cache(sender, instance, **kwar
     OrgResourceStatisticsRefreshUtil.refresh_if_need(instance)
 
 
-@receiver(pre_save, sender=Session)
+@receiver(post_save, sender=Session)
 def on_session_changed_refresh_org_resource_statistics_cache(sender, instance, **kwargs):
     OrgResourceStatisticsRefreshUtil.refresh_if_need(instance)
