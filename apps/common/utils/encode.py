@@ -98,7 +98,7 @@ def ssh_private_key_gen(private_key, password=None):
 
 def ssh_pubkey_gen(private_key=None, username='jumpserver', hostname='localhost', password=None):
     private_key = ssh_private_key_gen(private_key, password=password)
-    if not isinstance(private_key, (paramiko.RSAKey, paramiko.DSSKey)):
+    if not isinstance(private_key, _supported_paramiko_ssh_key_types):
         raise IOError('Invalid private key')
 
     public_key = "%(key_type)s %(key_content)s %(username)s@%(hostname)s" % {
@@ -175,6 +175,8 @@ def _parse_ssh_private_key(text, password=None):
                 dsa.DSAPrivateKey,
                 ed25519.Ed25519PrivateKey,
     """
+    if not bool(password):
+        password = None
     if isinstance(text, str):
         try:
             text = text.encode("utf-8")
@@ -274,4 +276,4 @@ def ensure_last_char_is_ascii(data):
 def data_to_json(data, sort_keys=True, indent=2, cls=None):
     if cls is None:
         cls = DjangoJSONEncoder
-    return json.dumps(data, sort_keys=sort_keys, indent=indent, cls=cls)
+    return json.dumps(data, ensure_ascii=False, sort_keys=sort_keys, indent=indent, cls=cls)

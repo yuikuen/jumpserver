@@ -147,6 +147,9 @@ function activeNav(prefix) {
     }
     var path = document.location.pathname;
     path = path.replace(prefix, '');
+    if (path === '/core/download/') {
+        return
+    }
     var urlArray = path.split("/");
     var app = urlArray[1];
     var resource = urlArray[2];
@@ -893,6 +896,14 @@ var rules_short_map_id = {
     'lower': 'id_security_password_lower_case',
     'number': 'id_security_password_number',
     'special': 'id_security_password_special_char'
+};
+
+var rules_id_map_label = {
+    'id_security_password_min_length': gettext('Password minimum length {N} bits'),
+    'id_security_password_upper_case': gettext('Must contain capital letters'),
+    'id_security_password_lower_case': gettext('Must contain lowercase letters'),
+    'id_security_password_number': gettext('Must contain numeric characters'),
+    'id_security_password_special_char': gettext('Must contain special characters')
 };
 
 function getRuleLabel(rule) {

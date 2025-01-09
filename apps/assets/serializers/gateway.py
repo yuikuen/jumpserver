@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 #
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from rest_framework import serializers
 
-from .asset import HostSerializer
 from .asset.common import AccountSecretSerializer
+from .asset.host import HostSerializer
 from ..models import Gateway, Asset
 
 __all__ = ['GatewaySerializer', 'GatewayWithAccountSecretSerializer']
@@ -13,6 +13,11 @@ __all__ = ['GatewaySerializer', 'GatewayWithAccountSecretSerializer']
 class GatewaySerializer(HostSerializer):
     class Meta(HostSerializer.Meta):
         model = Gateway
+
+    def validate_platform(self, p):
+        if not p.name.startswith('Gateway'):
+            raise serializers.ValidationError(_('The platform must start with Gateway'))
+        return p
 
     def validate_name(self, value):
         queryset = Asset.objects.filter(name=value)

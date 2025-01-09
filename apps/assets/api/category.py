@@ -1,10 +1,11 @@
-from rest_framework.mixins import ListModelMixin
 from rest_framework.decorators import action
+from rest_framework.mixins import ListModelMixin
 from rest_framework.response import Response
 
-from common.api import JMSGenericViewSet
-from assets.serializers import CategorySerializer, TypeSerializer
 from assets.const import AllTypes
+from assets.serializers import CategorySerializer, TypeSerializer
+from common.api import JMSGenericViewSet
+from common.permissions import IsValidUser
 
 __all__ = ['CategoryViewSet']
 
@@ -12,9 +13,9 @@ __all__ = ['CategoryViewSet']
 class CategoryViewSet(ListModelMixin, JMSGenericViewSet):
     serializer_classes = {
         'default': CategorySerializer,
-        'types': TypeSerializer
+        'types': TypeSerializer,
     }
-    permission_classes = ()
+    permission_classes = (IsValidUser,)
 
     def get_queryset(self):
         return AllTypes.categories()
@@ -31,4 +32,3 @@ class CategoryViewSet(ListModelMixin, JMSGenericViewSet):
         tp = request.query_params.get('type')
         constraints = AllTypes.get_constraints(category, tp)
         return Response(constraints)
-

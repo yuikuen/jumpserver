@@ -1,15 +1,17 @@
-import time
+import uuid
 
 from django.conf import settings
+from django.core.cache import cache
 from django.db import models
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
-from common.const.signals import SKIP_SIGNAL
+from common.const.signals import OP_LOG_SKIP_SIGNAL
 from common.db.models import JMSBaseModel
 from common.utils import get_logger, lazyproperty
 from orgs.utils import tmp_to_root_org
 from terminal.const import TerminalType as TypeChoices
 from users.models import User
+from .status import Status
 from ..session import Session
 
 logger = get_logger(__file__)
@@ -17,23 +19,27 @@ logger = get_logger(__file__)
 
 class TerminalStatusMixin:
     id: str
+    type: str
     ALIVE_KEY = 'TERMINAL_ALIVE_{}'
     status_set: models.Manager
 
     @lazyproperty
     def last_stat(self):
-        return self.status_set.order_by('date_created').last()
+        return Status.get_terminal_latest_stat(self)
 
     @lazyproperty
     def load(self):
         from ...utils import ComputeLoadUtil
-        return ComputeLoadUtil.compute_load(self.last_stat)
+        return ComputeLoadUtil.compute_load(self.last_stat, self.type)
 
     @property
     def is_alive(self):
-        if not self.last_stat:
-            return False
-        return time.time() - self.last_stat.date_created.timestamp() < 150
+        key = self.ALIVE_KEY.format(self.id)
+        return cache.get(key, False)
+
+    def set_alive(self, ttl=60 * 3):
+        key = self.ALIVE_KEY.format(self.id)
+        cache.set(key, True, ttl)
 
 
 class StorageMixin:
@@ -90,9 +96,9 @@ class Terminal(StorageMixin, TerminalStatusMixin, JMSBaseModel):
 
     @property
     def is_active(self):
-        if self.user and self.user.is_active:
-            return True
-        return False
+        user_active = self.user and self.user.is_active
+        type_active = self.type in [TypeChoices.core, TypeChoices.celery]
+        return user_active or type_active
 
     @is_active.setter
     def is_active(self, active):
@@ -112,6 +118,22 @@ class Terminal(StorageMixin, TerminalStatusMixin, JMSBaseModel):
         from settings.utils import get_login_title
         return {'TERMINAL_HEADER_TITLE': get_login_title()}
 
+    @staticmethod
+    def get_chat_ai_setting():
+        return {
+            'GPT_BASE_URL': settings.GPT_BASE_URL,
+            'GPT_API_KEY': settings.GPT_API_KEY,
+            'GPT_PROXY': settings.GPT_PROXY,
+            'GPT_MODEL': settings.GPT_MODEL,
+        }
+
+    @staticmethod
+    def get_xpack_license():
+        return {
+            'XPACK_LICENSE_IS_VALID': settings.XPACK_LICENSE_IS_VALID,
+            'XPACK_LICENSE_CONTENT': settings.XPACK_LICENSE_CONTENT
+        }
+
     @property
     def config(self):
         configs = {}
@@ -122,9 +144,13 @@ class Terminal(StorageMixin, TerminalStatusMixin, JMSBaseModel):
         configs.update(self.get_command_storage_setting())
         configs.update(self.get_replay_storage_setting())
         configs.update(self.get_login_title_setting())
+        configs.update(self.get_chat_ai_setting())
+        configs.update(self.get_xpack_license())
         configs.update({
             'SECURITY_MAX_IDLE_TIME': settings.SECURITY_MAX_IDLE_TIME,
-            'SECURITY_SESSION_SHARE': settings.SECURITY_SESSION_SHARE
+            'SECURITY_SESSION_SHARE': settings.SECURITY_SESSION_SHARE,
+            'FTP_FILE_MAX_STORE': settings.FTP_FILE_MAX_STORE,
+            'SECURITY_MAX_SESSION_TIME': settings.SECURITY_MAX_SESSION_TIME,
         })
         return configs
 
@@ -134,12 +160,12 @@ class Terminal(StorageMixin, TerminalStatusMixin, JMSBaseModel):
 
     def delete(self, using=None, keep_parents=False):
         if self.user:
-            setattr(self.user, SKIP_SIGNAL, True)
+            setattr(self.user, OP_LOG_SKIP_SIGNAL, True)
             self.user.delete()
+        self.name = self.name + '_' + uuid.uuid4().hex[:8]
         self.user = None
         self.is_deleted = True
         self.save()
-        return
 
     def __str__(self):
         status = "Active"

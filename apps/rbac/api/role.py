@@ -1,5 +1,5 @@
 from django.db.models import Q, Count
-from django.utils.translation import ugettext as _
+from django.utils.translation import gettext as _
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 
@@ -18,13 +18,13 @@ __all__ = [
 
 class RoleViewSet(JMSModelViewSet):
     queryset = Role.objects.all()
-    ordering = ('-builtin', 'scope', 'name')
     serializer_classes = {
         'default': RoleSerializer,
         'users': RoleUserSerializer,
     }
+    ordering = ('-builtin', 'name')
     filterset_class = RoleFilter
-    search_fields = ('name', 'scope', 'builtin')
+    search_fields = ('name', 'builtin')
     rbac_perms = {
         'users': 'rbac.view_rolebinding'
     }
@@ -56,25 +56,48 @@ class RoleViewSet(JMSModelViewSet):
             return
         instance.permissions.set(clone.get_permissions())
 
-    @staticmethod
-    def set_users_amount(queryset):
+    def filter_builtins(self, queryset):
+        keyword = self.request.query_params.get('search')
+        if not keyword:
+            return queryset
+
+        builtins = list(self.get_queryset().filter(builtin=True))
+        matched = [role.id for role in builtins if keyword in role.display_name]
+        if not matched:
+            return queryset
+        queryset = list(queryset.exclude(id__in=matched))
+        return queryset + builtins
+
+    def filter_queryset(self, queryset):
+        queryset = super().filter_queryset(queryset)
+        queryset = queryset.order_by(*self.ordering)
+        queryset = self.filter_builtins(queryset)
+        return queryset
+
+    def set_users_amount(self, queryset):
         """设置角色的用户绑定数量，以减少查询"""
+        ids = [role.id for role in queryset]
+        queryset = Role.objects.filter(id__in=ids).order_by(*self.ordering)
         org_id = current_org.id
-        q = Q(role__scope=Role.Scope.system) | Q(role__scope=Role.Scope.org, org_id=org_id)
-        role_bindings = RoleBinding.objects.filter(q).values_list('role_id').annotate(user_count=Count('user_id'))
+        if current_org.is_root():
+            q = Q(role__scope=Role.Scope.system) | Q(role__scope=Role.Scope.org)
+        else:
+            q = Q(role__scope=Role.Scope.system) | Q(role__scope=Role.Scope.org, org_id=org_id)
+        role_bindings = RoleBinding.objects_raw.filter(q).values_list('role_id').annotate(
+            user_count=Count('user_id', distinct=True)
+        )
         role_user_amount_mapper = {role_id: user_count for role_id, user_count in role_bindings}
-        queryset = queryset.annotate(permissions_amount=Count('permissions'))
+        queryset = queryset.annotate(permissions_amount=Count('permissions', distinct=True))
         queryset = list(queryset)
         for role in queryset:
             role.users_amount = role_user_amount_mapper.get(role.id, 0)
         return queryset
 
-    def paginate_queryset(self, queryset):
-        page_queryset = super().paginate_queryset(queryset)  # 返回是 list 对象
-        page_queryset_ids = [str(i.id) for i in page_queryset]
-        queryset = queryset.filter(id__in=page_queryset_ids)
-        queryset = self.set_users_amount(queryset)
-        return queryset
+    def get_serializer(self, *args, **kwargs):
+        if len(args) == 1 and kwargs.get('many', False):
+            queryset = self.set_users_amount(args[0])
+            args = (queryset,)
+        return super().get_serializer(*args, **kwargs)
 
     def perform_update(self, serializer):
         instance = serializer.instance
@@ -94,14 +117,16 @@ class SystemRoleViewSet(RoleViewSet):
     perm_model = SystemRole
 
     def get_queryset(self):
-        return super().get_queryset().filter(scope='system')
+        qs = super().get_queryset().filter(scope='system')
+        return qs
 
 
 class OrgRoleViewSet(RoleViewSet):
     perm_model = OrgRole
 
     def get_queryset(self):
-        return super().get_queryset().filter(scope='org')
+        qs = super().get_queryset().filter(scope='org')
+        return qs
 
 
 class BaseRolePermissionsViewSet(PermissionViewSet):

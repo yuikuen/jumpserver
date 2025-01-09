@@ -1,10 +1,10 @@
 from django.shortcuts import get_object_or_404
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from rest_framework import status, mixins, viewsets
 from rest_framework.response import Response
 
 from accounts.models import AutomationExecution
-from accounts.tasks import execute_automation
+from accounts.tasks import execute_account_automation_task
 from assets import serializers
 from assets.models import BaseAutomation
 from common.const.choices import Trigger
@@ -20,8 +20,8 @@ __all__ = [
 class AutomationAssetsListApi(generics.ListAPIView):
     model = BaseAutomation
     serializer_class = serializers.AutomationAssetsSerializer
-    filter_fields = ("name", "address")
-    search_fields = filter_fields
+    filterset_fields = ("name", "address")
+    search_fields = filterset_fields
 
     def get_object(self):
         pk = self.kwargs.get('pk')
@@ -95,8 +95,8 @@ class AutomationExecutionViewSet(
     mixins.CreateModelMixin, mixins.ListModelMixin,
     mixins.RetrieveModelMixin, viewsets.GenericViewSet
 ):
-    search_fields = ('trigger',)
-    filterset_fields = ('trigger', 'automation_id')
+    search_fields = ('trigger', 'automation__name')
+    filterset_fields = ('trigger', 'automation_id', 'automation__name')
     serializer_class = serializers.AutomationExecutionSerializer
 
     tp: str
@@ -109,7 +109,7 @@ class AutomationExecutionViewSet(
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         automation = serializer.validated_data.get('automation')
-        task = execute_automation.delay(
+        task = execute_account_automation_task.delay(
             pid=str(automation.pk), trigger=Trigger.manual, tp=self.tp
         )
         return Response({'task': task.id}, status=status.HTTP_201_CREATED)

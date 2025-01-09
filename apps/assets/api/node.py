@@ -3,7 +3,7 @@ from collections import namedtuple, defaultdict
 from functools import partial
 
 from django.db.models.signals import m2m_changed
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.generics import get_object_or_404
@@ -11,7 +11,6 @@ from rest_framework.response import Response
 from rest_framework.serializers import ValidationError
 
 from assets.models import Asset
-from rbac.permissions import RBACPermission
 from common.api import SuggestionMixin
 from common.const.http import POST
 from common.const.signals import PRE_REMOVE, POST_REMOVE
@@ -20,14 +19,15 @@ from common.utils import get_logger
 from orgs.mixins import generics
 from orgs.mixins.api import OrgBulkModelViewSet
 from orgs.utils import current_org
+from rbac.permissions import RBACPermission
 from .. import serializers
 from ..models import Node
+from ..signal_handlers import update_nodes_assets_amount
 from ..tasks import (
     update_node_assets_hardware_info_manual,
     test_node_assets_connectivity_manual,
     check_node_assets_amount_task
 )
-
 
 logger = get_logger(__file__)
 __all__ = [
@@ -95,6 +95,7 @@ class NodeAddChildrenApi(generics.UpdateAPIView):
         children = Node.objects.filter(id__in=node_ids)
         for node in children:
             node.parent = instance
+        update_nodes_assets_amount.delay(ttl=5, node_ids=(instance.id,))
         return Response("OK")
 
 
@@ -104,7 +105,7 @@ class NodeAddAssetsApi(generics.UpdateAPIView):
     instance = None
     permission_classes = (RBACPermission,)
     rbac_perms = {
-        'PUT': 'assets.add_assettonode',
+        'PUT': 'assets.change_assetnodes',
     }
 
     def perform_update(self, serializer):
@@ -119,7 +120,7 @@ class NodeRemoveAssetsApi(generics.UpdateAPIView):
     instance = None
     permission_classes = (RBACPermission,)
     rbac_perms = {
-        'PUT': 'assets.remove_assetfromnode',
+        'PUT': 'assets.change_assetnodes',
     }
 
     def perform_update(self, serializer):
@@ -141,7 +142,7 @@ class MoveAssetsToNodeApi(generics.UpdateAPIView):
     instance = None
     permission_classes = (RBACPermission,)
     rbac_perms = {
-        'PUT': 'assets.move_assettonode',
+        'PUT': 'assets.change_assetnodes',
     }
 
     def perform_update(self, serializer):
@@ -224,7 +225,7 @@ class NodeTaskCreateApi(generics.CreateAPIView):
             return
 
         if action == "refresh":
-            task = update_node_assets_hardware_info_manual(node.id)
+            task = update_node_assets_hardware_info_manual(node)
         else:
-            task = test_node_assets_connectivity_manual(node.id)
+            task = test_node_assets_connectivity_manual(node)
         self.set_serializer_data(serializer, task)

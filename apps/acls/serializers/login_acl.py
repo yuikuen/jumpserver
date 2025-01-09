@@ -1,61 +1,24 @@
-from django.utils.translation import ugettext as _
-from rest_framework import serializers
+from django.utils.translation import gettext as _
 
-from common.serializers.fields import ObjectRelatedField, LabeledChoiceField
-from common.serializers import BulkModelSerializer, MethodSerializer
-from jumpserver.utils import has_valid_xpack_license
-from users.models import User
+from common.serializers import MethodSerializer
+from orgs.mixins.serializers import BulkOrgResourceModelSerializer
+from .base import BaseUserACLSerializer
 from .rules import RuleSerializer
+from ..const import ActionChoices
 from ..models import LoginACL
 
-__all__ = [
-    "LoginACLSerializer",
-]
+__all__ = ["LoginACLSerializer"]
 
-common_help_text = _(
-    "Format for comma-delimited string, with * indicating a match all. "
-)
+common_help_text = _("With * indicating a match all. ")
 
 
-class LoginACLSerializer(BulkModelSerializer):
-    user = ObjectRelatedField(queryset=User.objects, label=_("User"))
-    reviewers = ObjectRelatedField(
-        queryset=User.objects, label=_("Reviewers"), many=True, required=False
-    )
-    action = LabeledChoiceField(choices=LoginACL.ActionChoices.choices, label=_('Action'))
-    reviewers_amount = serializers.IntegerField(
-        read_only=True, source="reviewers.count", label=_("Reviewers amount")
-    )
+class LoginACLSerializer(BaseUserACLSerializer, BulkOrgResourceModelSerializer):
     rules = MethodSerializer(label=_('Rule'))
 
-    class Meta:
+    class Meta(BaseUserACLSerializer.Meta):
         model = LoginACL
-        fields_mini = ["id", "name"]
-        fields_small = fields_mini + [
-            "priority", "user", "rules", "action",
-            "is_active", "date_created", "date_updated",
-            "comment", "created_by",
-        ]
-        fields_fk = ["user"]
-        fields_m2m = ["reviewers", "reviewers_amount"]
-        fields = fields_small + fields_fk + fields_m2m
-        extra_kwargs = {
-            "priority": {"default": 50},
-            "is_active": {"default": True},
-        }
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.set_action_choices()
-
-    def set_action_choices(self):
-        action = self.fields.get("action")
-        if not action:
-            return
-        choices = action.choices
-        if not has_valid_xpack_license():
-            choices.pop(LoginACL.ActionChoices.review, None)
-        action.choices = choices
+        fields = BaseUserACLSerializer.Meta.fields + ['rules', ]
+        action_choices_exclude = [ActionChoices.face_online, ActionChoices.face_verify]
 
     def get_rules_serializer(self):
         return RuleSerializer()

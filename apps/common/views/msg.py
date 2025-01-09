@@ -1,7 +1,8 @@
 #
-from django.utils.decorators import method_decorator
-from django.views.decorators.cache import never_cache
 from django.http import HttpResponse
+from django.utils.decorators import method_decorator
+from django.utils.translation import gettext_lazy as _
+from django.views.decorators.cache import never_cache
 from django.views.generic.base import TemplateView
 
 from common.utils import bulk_get, FlashMessageUtil
@@ -14,11 +15,11 @@ class FlashMessageMsgView(TemplateView):
     def get(self, request, *args, **kwargs):
         code = request.GET.get('code')
         if not code:
-            return HttpResponse('Not found the code')
+            return HttpResponse(_('Not found the code'))
 
         message_data = FlashMessageUtil.get_message_by_code(code)
         if not message_data:
-            return HttpResponse('Message code error')
+            return HttpResponse(_('The message code provided is invalid or has expired'))
 
         items = ('title', 'message', 'error', 'redirect_url', 'confirm_button', 'cancel_url')
         title, msg, error, redirect_url, confirm_btn, cancel_url = bulk_get(message_data, items)

@@ -1,15 +1,18 @@
 # coding: utf-8
 #
 
-from rest_framework import viewsets, generics, status
-from rest_framework.response import Response
-from rest_framework.request import Request
-from rest_framework.decorators import action
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
+from django_filters import rest_framework as drf_filters
 from django_filters import utils
+from rest_framework import viewsets, generics, status
+from rest_framework.decorators import action
+from rest_framework.request import Request
+from rest_framework.response import Response
 
-from terminal import const
+from common.api.mixin import CommonApiMixin
 from common.const.http import GET
+from common.drf.filters import BaseFilterSet
+from terminal import const
 from terminal.filters import CommandStorageFilter, CommandFilter, CommandFilterForStorageTree
 from terminal.models import CommandStorage, ReplayStorage
 from terminal.serializers import CommandStorageSerializer, ReplayStorageSerializer
@@ -20,15 +23,17 @@ __all__ = [
 ]
 
 
-class BaseStorageViewSetMixin:
+class BaseStorageViewSetMixin(CommonApiMixin):
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         if instance.type_null_or_server or instance.is_default:
             data = {'msg': _('Deleting the default storage is not allowed')}
             return Response(data=data, status=status.HTTP_400_BAD_REQUEST)
-        if instance.is_use():
-            data = {'msg': _('Cannot delete storage that is being used')}
+        used_by = instance.used_by()
+        if used_by:
+            names = ', '.join(list(used_by.values_list('name', flat=True)))
+            data = {'msg': _('Cannot delete storage that is being used: {}').format(names)}
             return Response(data=data, status=status.HTTP_400_BAD_REQUEST)
         return super().destroy(request, *args, **kwargs)
 
@@ -78,35 +83,43 @@ class CommandStorageViewSet(BaseStorageViewSetMixin, viewsets.ModelViewSet):
 
         invalid = _('Invalid')
         nodes = [
-            {
-                'id': storage.id,
-                'name': f'{storage.name}({storage.type})({command_count})',
-                'title': f'{storage.name}({storage.type})',
-                'pId': 'root',
-                'isParent': False,
-                'open': False,
-                'valid': True,
-            } for storage, command_count in storages_with_count
-        ] + [
-            {
-                'id': storage.id,
-                'name': f'{storage.name}({storage.type}) *{invalid}',
-                'title': f'{storage.name}({storage.type})',
-                'pId': 'root',
-                'isParent': False,
-                'open': False,
-                'valid': False,
-            } for storage in invalid_storages
-        ]
+                    {
+                        'id': storage.id,
+                        'name': f'{storage.name}({storage.type}) ({command_count})',
+                        'title': f'{storage.name}({storage.type})',
+                        'pId': 'root',
+                        'isParent': False,
+                        'open': False,
+                        'valid': True,
+                    } for storage, command_count in storages_with_count
+                ] + [
+                    {
+                        'id': storage.id,
+                        'name': f'{storage.name}({storage.type}) *{invalid}',
+                        'title': f'{storage.name}({storage.type})',
+                        'pId': 'root',
+                        'isParent': False,
+                        'open': False,
+                        'valid': False,
+                    } for storage in invalid_storages
+                ]
         nodes.append(root)
         return Response(data=nodes)
 
 
+class ReplayStorageFilterSet(BaseFilterSet):
+    type_not = drf_filters.CharFilter(field_name='type', exclude=True)
+
+    class Meta:
+        model = ReplayStorage
+        fields = ['name', 'type', 'is_default', 'type_not']
+
+
 class ReplayStorageViewSet(BaseStorageViewSetMixin, viewsets.ModelViewSet):
-    filterset_fields = ('name', 'type', 'is_default')
-    search_fields = filterset_fields
+    search_fields = ('name', 'type', 'is_default')
     queryset = ReplayStorage.objects.all()
     serializer_class = ReplayStorageSerializer
+    filterset_class = ReplayStorageFilterSet
 
 
 class BaseStorageTestConnectiveMixin:
@@ -121,7 +134,7 @@ class BaseStorageTestConnectiveMixin:
             if is_valid:
                 msg = _("Test successful")
             else:
-                msg = _("Test failure: Account invalid")
+                msg = _("Test failure: Please check configuration")
         data = {
             'is_valid': is_valid,
             'msg': msg

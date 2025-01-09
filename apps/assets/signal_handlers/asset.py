@@ -11,6 +11,7 @@ from assets.tasks import test_assets_connectivity_task, gather_assets_facts_task
 from common.const.signals import POST_REMOVE, PRE_REMOVE
 from common.decorators import on_transaction_commit, merge_delay_run, key_by_org
 from common.utils import get_logger
+from orgs.utils import current_org
 
 logger = get_logger(__file__)
 
@@ -23,7 +24,8 @@ def on_node_pre_save(sender, instance: Node, **kwargs):
 @merge_delay_run(ttl=5, key=key_by_org)
 def test_assets_connectivity_handler(assets=()):
     task_name = gettext_noop("Test assets connectivity ")
-    test_assets_connectivity_task.delay(assets, task_name)
+    asset_ids = [a.id for a in assets]
+    test_assets_connectivity_task.delay(asset_ids, str(current_org.id), task_name)
 
 
 @merge_delay_run(ttl=5, key=key_by_org)
@@ -32,7 +34,8 @@ def gather_assets_facts_handler(assets=()):
         logger.info("No assets to update hardware info")
         return
     name = gettext_noop("Gather asset hardware info")
-    gather_assets_facts_task.delay(assets=assets, task_name=name)
+    asset_ids = [a.id for a in assets]
+    gather_assets_facts_task.delay(asset_ids, str(current_org.id), task_name=name)
 
 
 @merge_delay_run(ttl=5, key=key_by_org)
@@ -60,14 +63,14 @@ def on_asset_create(sender, instance=None, created=False, **kwargs):
         return
     logger.info("Asset create signal recv: {}".format(instance))
 
-    ensure_asset_has_node(assets=(instance,))
+    ensure_asset_has_node.delay(assets=(instance,))
 
     # 获取资产硬件信息
-    auto_info = instance.auto_info
-    if auto_info.get('ping_enabled'):
+    auto_config = instance.auto_config
+    if auto_config.get('ping_enabled'):
         logger.debug('Asset {} ping enabled, test connectivity'.format(instance.name))
-        test_assets_connectivity_handler(assets=(instance,))
-    if auto_info.get('gather_facts_enabled'):
+        test_assets_connectivity_handler.delay(assets=(instance,))
+    if auto_config.get('gather_facts_enabled'):
         logger.debug('Asset {} gather facts enabled, gather facts'.format(instance.name))
         gather_assets_facts_handler(assets=(instance,))
 
@@ -77,10 +80,11 @@ RELATED_NODE_IDS = '_related_node_ids'
 
 @receiver(pre_delete, sender=Asset)
 def on_asset_delete(instance: Asset, using, **kwargs):
-    logger.debug("Asset pre delete signal recv: {}".format(instance))
     node_ids = Node.objects.filter(assets=instance) \
         .distinct().values_list('id', flat=True)
-    setattr(instance, RELATED_NODE_IDS, node_ids)
+    node_ids = list(node_ids)
+    logger.debug("Asset pre delete signal recv: {}, node_ids: {}".format(instance, node_ids))
+    setattr(instance, RELATED_NODE_IDS, list(node_ids))
     m2m_changed.send(
         sender=Asset.nodes.through, instance=instance,
         reverse=False, model=Node, pk_set=node_ids,
@@ -90,8 +94,8 @@ def on_asset_delete(instance: Asset, using, **kwargs):
 
 @receiver(post_delete, sender=Asset)
 def on_asset_post_delete(instance: Asset, using, **kwargs):
-    logger.debug("Asset post delete signal recv: {}".format(instance))
     node_ids = getattr(instance, RELATED_NODE_IDS, [])
+    logger.debug("Asset post delete signal recv: {}, node_ids: {}".format(instance, node_ids))
     if node_ids:
         m2m_changed.send(
             sender=Asset.nodes.through, instance=instance, reverse=False,

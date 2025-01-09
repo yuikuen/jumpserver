@@ -1,14 +1,14 @@
-from django.utils.translation import ugettext as _
+from django.utils.translation import gettext_lazy as _
 from rest_framework import serializers
 
-from ops.mixin import PeriodTaskSerializerMixin
+from accounts.models import AutomationExecution
 from assets.const import AutomationTypes
 from assets.models import Asset, Node, BaseAutomation
-from accounts.models import AutomationExecution
-from orgs.mixins.serializers import BulkOrgResourceModelSerializer
-from common.utils import get_logger
 from common.const.choices import Trigger
 from common.serializers.fields import ObjectRelatedField, LabeledChoiceField
+from common.utils import get_logger
+from ops.mixin import PeriodTaskSerializerMixin
+from orgs.mixins.serializers import BulkOrgResourceModelSerializer
 
 logger = get_logger(__file__)
 
@@ -21,10 +21,12 @@ __all__ = [
 class BaseAutomationSerializer(PeriodTaskSerializerMixin, BulkOrgResourceModelSerializer):
     assets = ObjectRelatedField(many=True, required=False, queryset=Asset.objects, label=_('Assets'))
     nodes = ObjectRelatedField(many=True, required=False, queryset=Node.objects, label=_('Nodes'))
+    is_periodic = serializers.BooleanField(default=False, required=False, label=_("Periodic perform"))
 
     class Meta:
         read_only_fields = [
-            'date_created', 'date_updated', 'created_by', 'periodic_display', 'executed_amount'
+            'date_created', 'date_updated', 'created_by',
+            'periodic_display', 'executed_amount'
         ]
         fields = read_only_fields + [
             'id', 'name', 'is_periodic', 'interval', 'crontab', 'comment',
@@ -33,9 +35,19 @@ class BaseAutomationSerializer(PeriodTaskSerializerMixin, BulkOrgResourceModelSe
         extra_kwargs = {
             'name': {'required': True},
             'type': {'read_only': True},
-            'periodic_display': {'label': _('Periodic perform')},
-            'executed_amount': {'label': _('Executed amount')},
+            'executed_amount': {'label': _('Executions')},
         }
+
+    def validate_name(self, name):
+        if self.instance and self.instance.name == name:
+            return name
+        if BaseAutomation.objects.filter(name=name, type=self.model_type).exists():
+            raise serializers.ValidationError(_('Name already exists'))
+        return name
+
+    @property
+    def model_type(self):
+        raise NotImplementedError
 
 
 class AutomationExecutionSerializer(serializers.ModelSerializer):
@@ -52,15 +64,17 @@ class AutomationExecutionSerializer(serializers.ModelSerializer):
 
     @staticmethod
     def get_snapshot(obj):
-        tp = obj.snapshot['type']
+        tp = obj.snapshot.get('type', '')
+        type_display = tp if not hasattr(AutomationTypes, tp) \
+            else getattr(AutomationTypes, tp).label
         snapshot = {
             'type': tp,
-            'name': obj.snapshot['name'],
-            'comment': obj.snapshot['comment'],
-            'accounts': obj.snapshot['accounts'],
-            'node_amount': len(obj.snapshot['nodes']),
-            'asset_amount': len(obj.snapshot['assets']),
-            'type_display': getattr(AutomationTypes, tp).label,
+            'name': obj.snapshot.get('name'),
+            'comment': obj.snapshot.get('comment'),
+            'accounts': obj.snapshot.get('accounts'),
+            'node_amount': len(obj.snapshot.get('nodes', [])),
+            'asset_amount': len(obj.snapshot.get('assets', [])),
+            'type_display': type_display,
         }
         return snapshot
 

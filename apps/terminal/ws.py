@@ -1,4 +1,5 @@
 import datetime
+from threading import Thread
 
 from channels.generic.websocket import JsonWebsocketConsumer
 from django.utils import timezone
@@ -7,9 +8,10 @@ from rest_framework.renderers import JSONRenderer
 from common.db.utils import safe_db_connection
 from common.utils import get_logger
 from common.utils.connection import Subscription
-from terminal.models import Terminal
-from terminal.models import Session
+from terminal.const import TaskNameType
+from terminal.models import Session, Terminal
 from terminal.serializers import TaskSerializer, StatSerializer
+from .mixin import LokiMixin
 from .signal_handlers import component_event_chan
 
 logger = get_logger(__name__)
@@ -45,7 +47,7 @@ class TerminalTaskWebsocket(JsonWebsocketConsumer):
         with safe_db_connection():
             serializer.save()
 
-    def send_kill_tasks_msg(self, task_id=None):
+    def send_tasks_msg(self, task_id=None):
         content = self.get_terminal_tasks(task_id)
         self.send(bytes_data=content)
 
@@ -60,7 +62,7 @@ class TerminalTaskWebsocket(JsonWebsocketConsumer):
 
     def watch_component_event(self):
         # 先发一次已有的任务
-        self.send_kill_tasks_msg()
+        self.send_tasks_msg()
 
         ws = self
 
@@ -68,8 +70,8 @@ class TerminalTaskWebsocket(JsonWebsocketConsumer):
             logger.debug('New component task msg recv: {}'.format(msg))
             msg_type = msg.get('type')
             payload = msg.get('payload')
-            if msg_type == "kill_session":
-                ws.send_kill_tasks_msg(payload.get('id'))
+            if msg_type in TaskNameType.names:
+                ws.send_tasks_msg(payload.get('id'))
 
         return component_event_chan.subscribe(handle_task_msg_recv)
 
@@ -77,3 +79,40 @@ class TerminalTaskWebsocket(JsonWebsocketConsumer):
         if self.sub is None:
             return
         self.sub.unsubscribe()
+
+
+class LokiTailWebsocket(JsonWebsocketConsumer, LokiMixin):
+    loki_tail_ws = None
+
+    def connect(self):
+        user = self.scope["user"]
+        if user.is_authenticated and user.is_superuser:
+            self.accept()
+            logger.info('Loki tail websocket connected')
+        else:
+            self.close()
+
+    def receive_json(self, content, **kwargs):
+        if not content:
+            return
+        components = content.get('components')
+        search = content.get('search', '')
+        query = self.create_loki_query(components, search)
+        self.handle_query(query)
+
+    def send_tail_msg(self, tail_ws):
+        for message in tail_ws.messages():
+            self.send(text_data=message)
+        logger.info('Loki tail thread finished')
+
+    def handle_query(self, query):
+        loki_client = self.get_loki_client()
+        self.loki_tail_ws = loki_client.create_tail_ws(query)
+        threader = Thread(target=self.send_tail_msg, args=(self.loki_tail_ws,))
+        threader.start()
+        logger.debug('Start loki tail thread')
+
+    def disconnect(self, close_code):
+        if self.loki_tail_ws:
+            self.loki_tail_ws.close()
+            logger.info('Loki tail websocket client closed')

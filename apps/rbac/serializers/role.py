@@ -1,4 +1,4 @@
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from rest_framework import serializers
 
 from common.serializers.fields import LabeledChoiceField
@@ -25,8 +25,9 @@ class RoleSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'permissions': {'write_only': True},
             'users_amount': {'label': _('Users amount')},
-            'display_name': {'label': _('Display name')}
+            'display_name': {'label': _('Name')}
         }
+        fields_unexport = ['permissions']
 
 
 class RoleUserSerializer(serializers.ModelSerializer):

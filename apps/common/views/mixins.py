@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
 #
-from django.utils.translation import ugettext_lazy as _
 from django.contrib.auth.mixins import UserPassesTestMixin
 from django.http.response import JsonResponse
+from django.db.models import Model
+from django.utils import translation
 from rest_framework import permissions
 from rest_framework.request import Request
 
-from common.exceptions import UserConfirmRequired
+from audits.const import ActivityChoices
 from audits.handler import create_or_update_operate_log
-from audits.const import ActionChoices
+from audits.models import ActivityLog
+from common.exceptions import UserConfirmRequired
+from orgs.utils import current_org
 
 __all__ = [
     "PermissionsMixin",
@@ -45,39 +48,20 @@ class PermissionsMixin(UserPassesTestMixin):
 
 
 class RecordViewLogMixin:
-    ACTION = ActionChoices.view
+    model: Model
 
-    @staticmethod
-    def get_resource_display(request):
-        query_params = dict(request.query_params)
-        if query_params.get("format"):
-            query_params.pop("format")
-        spm_filter = query_params.pop("spm") if query_params.get("spm") else None
-        if not query_params and not spm_filter:
-            display_message = _("Export all")
-        elif spm_filter:
-            display_message = _("Export only selected items")
-        else:
-            query = ",".join(
-                ["%s=%s" % (key, value) for key, value in query_params.items()]
+    def record_logs(self, ids, action, detail, model=None, **kwargs):
+        with translation.override('en'):
+            model = model or self.model
+            resource_type = model._meta.verbose_name
+            create_or_update_operate_log(
+                action, resource_type, force=True, **kwargs
             )
-            display_message = _("Export filtered: %s") % query
-        return display_message
-
-    def list(self, request, *args, **kwargs):
-        response = super().list(request, *args, **kwargs)
-        resource_display = self.get_resource_display(request)
-        resource_type = self.model._meta.verbose_name
-        create_or_update_operate_log(
-            self.ACTION, resource_type, force=True,
-            resource_display=resource_display
-        )
-        return response
-
-    def retrieve(self, request, *args, **kwargs):
-        response = super().retrieve(request, *args, **kwargs)
-        resource_type = self.model._meta.verbose_name
-        create_or_update_operate_log(
-            self.ACTION, resource_type, force=True, resource=self.get_object()
-        )
-        return response
+            activities = [
+                ActivityLog(
+                    resource_id=resource_id, type=ActivityChoices.operate_log,
+                    detail=detail, org_id=current_org.id,
+                )
+                for resource_id in ids
+            ]
+            ActivityLog.objects.bulk_create(activities)
