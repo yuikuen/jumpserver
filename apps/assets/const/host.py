@@ -1,3 +1,5 @@
+from django.utils.translation import gettext_lazy as _
+
 from .base import BaseType
 
 GATEWAY_NAME = 'Gateway'
@@ -7,7 +9,7 @@ class HostTypes(BaseType):
     LINUX = 'linux', 'Linux'
     WINDOWS = 'windows', 'Windows'
     UNIX = 'unix', 'Unix'
-    OTHER_HOST = 'other', "Other"
+    OTHER_HOST = 'other', _("Other")
 
     @classmethod
     def _get_base_constrains(cls) -> dict:
@@ -17,10 +19,7 @@ class HostTypes(BaseType):
                 'charset': 'utf-8',  # default
                 'domain_enabled': True,
                 'su_enabled': True,
-                'su_methods': [
-                    {'name': 'sudo su', 'id': 'sudo su'},
-                    {'name': 'su -', 'id': 'su -'}
-                ],
+                'su_methods': ['sudo', 'su', 'only_sudo', 'only_su'],
             },
             cls.WINDOWS: {
                 'su_enabled': False,
@@ -34,10 +33,10 @@ class HostTypes(BaseType):
     def _get_protocol_constrains(cls) -> dict:
         return {
             '*': {
-                'choices': ['ssh', 'telnet', 'vnc', 'rdp']
+                'choices': ['ssh', 'sftp', 'telnet', 'vnc', 'rdp']
             },
             cls.WINDOWS: {
-                'choices': ['rdp', 'ssh', 'vnc']
+                'choices': ['rdp', 'ssh', 'sftp', 'vnc', 'winrm']
             }
         }
 
@@ -54,16 +53,24 @@ class HostTypes(BaseType):
                 'gather_accounts_enabled': True,
                 'verify_account_enabled': True,
                 'change_secret_enabled': True,
-                'push_account_enabled': True
+                'push_account_enabled': True,
+                'remove_account_enabled': True,
+
             },
             cls.WINDOWS: {
                 'ansible_config': {
                     'ansible_shell_type': 'cmd',
-                    'ansible_connection': 'ssh',
+                    'ansible_connection': 'smart',
                 },
             },
             cls.OTHER_HOST: {
-                'ansible_enabled': False
+                'ansible_enabled': False,
+                'ping_enabled': False,
+                'gather_facts_enabled': False,
+                'gather_accounts_enabled': False,
+                'verify_account_enabled': False,
+                'change_secret_enabled': False,
+                'push_account_enabled': False
             },
         }
 
@@ -81,7 +88,13 @@ class HostTypes(BaseType):
                 {'name': 'Unix'},
                 {'name': 'macOS'},
                 {'name': 'BSD'},
-                {'name': 'AIX'},
+                {
+                    'name': 'AIX',
+                    'automation': {
+                        'push_account_method': 'push_account_aix',
+                        'change_secret_method': 'change_secret_aix',
+                    }
+                },
             ],
             cls.WINDOWS: [
                 {'name': 'Windows'},

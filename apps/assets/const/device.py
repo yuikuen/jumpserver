@@ -15,7 +15,8 @@ class DeviceTypes(BaseType):
             '*': {
                 'charset_enabled': False,
                 'domain_enabled': True,
-                'su_enabled': False,
+                'su_enabled': True,
+                'su_methods': ['enable', 'super', 'super_level']
             }
         }
 
@@ -23,7 +24,7 @@ class DeviceTypes(BaseType):
     def _get_protocol_constrains(cls) -> dict:
         return {
             '*': {
-                'choices': ['ssh', 'telnet']
+                'choices': ['ssh', 'telnet', 'sftp']
             }
         }
 
@@ -31,16 +32,18 @@ class DeviceTypes(BaseType):
     def _get_automation_constrains(cls) -> dict:
         return {
             '*': {
-                'ansible_enabled': False,
+                'ansible_enabled': True,
                 'ansible_config': {
                     'ansible_connection': 'local',
+                    'first_conn_delay_time': 0.5,
                 },
-                'ping_enabled': False,
+                'ping_enabled': True,
                 'gather_facts_enabled': False,
                 'gather_accounts_enabled': False,
-                'verify_account_enabled': False,
-                'change_secret_enabled': False,
-                'push_account_enabled': False
+                'verify_account_enabled': True,
+                'change_secret_enabled': True,
+                'push_account_enabled': False,
+                'remove_account_enabled': False,
             }
         }
 

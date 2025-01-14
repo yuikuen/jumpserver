@@ -1,10 +1,10 @@
+from django.utils.translation import gettext_lazy as _
 from rest_framework import serializers
-from django.utils.translation import ugettext_lazy as _
 
 from assets.models import Asset, Node
+from common.serializers.fields import ObjectRelatedField
 from perms.models import AssetPermission
 from perms.serializers.permission import ActionChoicesField
-from common.serializers.fields import ObjectRelatedField
 from tickets.models import ApplyAssetTicket
 from .common import BaseApplyAssetSerializer
 from .ticket import TicketApplySerializer
@@ -40,6 +40,8 @@ class ApplyAssetSerializer(BaseApplyAssetSerializer, TicketApplySerializer):
         ticket_extra_kwargs = TicketApplySerializer.Meta.extra_kwargs
         extra_kwargs = {
             'apply_accounts': {'required': False},
+            'apply_date_start': {'allow_null': False},
+            'apply_date_expired': {'allow_null': False},
         }
         extra_kwargs.update(ticket_extra_kwargs)
 

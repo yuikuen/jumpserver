@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 #
 import uuid
-from inspect import signature
-from functools import wraps
-from werkzeug.local import LocalProxy
 from contextlib import contextmanager
+from functools import wraps
+from inspect import signature
+
+from werkzeug.local import LocalProxy
+from django.conf import settings
 
 from common.local import thread_local
 from .models import Organization
@@ -13,7 +15,6 @@ from .models import Organization
 def get_org_from_request(request):
     # query中优先级最高
     oid = request.GET.get("oid")
-
     # 其次header
     if not oid:
         oid = request.META.get("HTTP_X_JMS_ORG")
@@ -24,13 +25,32 @@ def get_org_from_request(request):
     if not oid:
         oid = request.session.get("oid")
 
-    if not oid:
-        oid = Organization.DEFAULT_ID
-    if oid.lower() == "default":
-        oid = Organization.DEFAULT_ID
-    elif oid.lower() == "root":
-        oid = Organization.ROOT_ID
-    org = Organization.get_instance(oid, default=Organization.default())
+    if oid and oid.lower() == 'default':
+        return Organization.default()
+
+    if oid and oid.lower() == 'root':
+        return Organization.root()
+
+    if oid and oid.lower() == 'system':
+        return Organization.system()
+
+    org = Organization.get_instance(oid)
+
+    if org and org.internal:
+        # 内置组织直接返回
+        return org
+
+    if not settings.XPACK_ENABLED:
+        # 社区版用户只能使用默认组织
+        return Organization.default()
+
+    if not org and request.user.is_authenticated:
+        # 企业版用户优先从自己有权限的组织中获取
+        org = request.user.orgs.exclude(id=Organization.SYSTEM_ID).first()
+
+    if not org:
+        org = Organization.default()
+
     return org
 
 
@@ -86,7 +106,8 @@ def tmp_to_root_org():
 @contextmanager
 def tmp_to_org(org):
     ori_org = get_current_org()
-    set_current_org(org)
+    if org:
+        set_current_org(org)
     yield
     if ori_org is not None:
         set_current_org(ori_org)
@@ -133,6 +154,7 @@ def org_aware_func(org_arg_name):
     :param org_arg_name: 函数中包含org_id的对象是哪个参数
     :return:
     """
+
     def decorate(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -149,7 +171,9 @@ def org_aware_func(org_arg_name):
             with tmp_to_org(org_aware_resource.org_id):
                 # print("Current org id: {}".format(org_aware_resource.org_id))
                 return func(*args, **kwargs)
+
         return wrapper
+
     return decorate
 
 
@@ -162,4 +186,5 @@ def ensure_in_real_or_default_org(func):
         if not current_org or current_org.is_root():
             raise ValueError('You must in a real or default org!')
         return func(*args, **kwargs)
+
     return wrapper

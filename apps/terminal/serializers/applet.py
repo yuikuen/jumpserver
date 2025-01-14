@@ -12,8 +12,9 @@ __all__ = [
 
 
 class AppletPublicationSerializer(serializers.ModelSerializer):
-    applet = ObjectRelatedField(attrs=('id', 'name', 'display_name', 'icon', 'version'), queryset=Applet.objects.all())
-    host = ObjectRelatedField(queryset=AppletHost.objects.all())
+    applet = ObjectRelatedField(attrs=('id', 'name', 'display_name', 'icon', 'version'), label=_("Applet"),
+                                queryset=Applet.objects.all())
+    host = ObjectRelatedField(queryset=AppletHost.objects.all(), label=_("Host"))
     status = LabeledChoiceField(choices=PublishStatus.choices, label=_("Status"), default=Status.pending)
 
     class Meta:
@@ -26,6 +27,10 @@ class AppletPublicationSerializer(serializers.ModelSerializer):
 class AppletSerializer(serializers.ModelSerializer):
     icon = serializers.ReadOnlyField(label=_("Icon"))
     type = LabeledChoiceField(choices=Applet.Type.choices, label=_("Type"))
+    edition = LabeledChoiceField(
+        choices=Applet.Edition.choices, label=_("Edition"), required=False,
+        default=Applet.Edition.community
+    )
 
     class Meta:
         model = Applet
@@ -34,6 +39,6 @@ class AppletSerializer(serializers.ModelSerializer):
             'icon', 'readme', 'date_created', 'date_updated',
         ]
         fields = fields_mini + [
-            'version', 'author', 'type', 'protocols',
-            'tags', 'comment'
+            'version', 'author', 'type', 'edition',
+            'can_concurrent', 'protocols', 'tags', 'comment',
         ] + read_only_fields

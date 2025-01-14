@@ -1,3 +1,5 @@
+import re
+
 from django.utils import timezone
 
 __all__ = ['GatherAccountsFilter']
@@ -13,8 +15,8 @@ class GatherAccountsFilter:
     def mysql_filter(info):
         result = {}
         for _, user_dict in info.items():
-            for username, data in user_dict.items():
-                if data.get('account_locked') == 'N':
+            for username, _ in user_dict.items():
+                if len(username.split('.')) == 1:
                     result[username] = {}
         return result
 
@@ -27,18 +29,26 @@ class GatherAccountsFilter:
 
     @staticmethod
     def posix_filter(info):
+        username_pattern = re.compile(r'^(\S+)')
+        ip_pattern = re.compile(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})')
+        login_time_pattern = re.compile(r'\w{3} \w{3}\s+\d{1,2} \d{2}:\d{2}:\d{2} \d{4}')
         result = {}
         for line in info:
-            data = line.split('@')
-            if len(data) == 1:
-                result[line] = {}
+            usernames = username_pattern.findall(line)
+            username = ''.join(usernames)
+            if username:
+                result[username] = {}
+            else:
                 continue
-
-            if len(data) != 3:
-                continue
-            username, address, dt = data
-            date = timezone.datetime.strptime(f'{dt} +0800', '%b %d %H:%M:%S %Y %z')
-            result[username] = {'address': address, 'date': date}
+            ip_addrs = ip_pattern.findall(line)
+            ip_addr = ''.join(ip_addrs)
+            if ip_addr:
+                result[username].update({'address': ip_addr})
+            login_times = login_time_pattern.findall(line)
+            if login_times:
+                datetime_str = login_times[0].split(' ', 1)[1] + " +0800"
+                date = timezone.datetime.strptime(datetime_str, '%b %d %H:%M:%S %Y %z')
+                result[username].update({'date': date})
         return result
 
     @staticmethod
@@ -60,4 +70,6 @@ class GatherAccountsFilter:
         if not run_method_name:
             return info
 
-        return getattr(self, f'{run_method_name}_filter')(info)
+        if hasattr(self, f'{run_method_name}_filter'):
+            return getattr(self, f'{run_method_name}_filter')(info)
+        return info

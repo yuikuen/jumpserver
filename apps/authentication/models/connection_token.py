@@ -6,20 +6,23 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db import models
 from django.utils import timezone
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from rest_framework.exceptions import PermissionDenied
 
+from accounts.models import VirtualAccount
 from assets.const import Protocol
+from assets.const.host import GATEWAY_NAME
 from common.db.fields import EncryptTextField
 from common.exceptions import JMSException
 from common.utils import lazyproperty, pretty_string, bulk_get
 from common.utils.timezone import as_current_tz
 from orgs.mixins.models import JMSOrgBaseModel
-from terminal.models import Applet
+from orgs.utils import tmp_to_org
+from terminal.models import Applet, VirtualApp
 
 
 def date_expired_default():
-    return timezone.now() + timedelta(seconds=settings.CONNECTION_TOKEN_EXPIRATION)
+    return timezone.now() + timedelta(seconds=settings.CONNECTION_TOKEN_ONETIME_EXPIRATION)
 
 
 class ConnectionToken(JMSOrgBaseModel):
@@ -37,22 +40,26 @@ class ConnectionToken(JMSOrgBaseModel):
     input_secret = EncryptTextField(max_length=64, default='', blank=True, verbose_name=_("Input secret"))
     protocol = models.CharField(max_length=16, default=Protocol.ssh, verbose_name=_("Protocol"))
     connect_method = models.CharField(max_length=32, verbose_name=_("Connect method"))
+    connect_options = models.JSONField(default=dict, verbose_name=_("Connect options"))
     user_display = models.CharField(max_length=128, default='', verbose_name=_("User display"))
     asset_display = models.CharField(max_length=128, default='', verbose_name=_("Asset display"))
+    is_reusable = models.BooleanField(default=False, verbose_name=_("Reusable"))
     date_expired = models.DateTimeField(default=date_expired_default, verbose_name=_("Date expired"))
     from_ticket = models.OneToOneField(
         'tickets.ApplyLoginAssetTicket', related_name='connection_token',
         on_delete=models.SET_NULL, null=True, blank=True,
         verbose_name=_('From ticket')
     )
+    face_monitor_token = models.CharField(max_length=128, null=True, blank=True, verbose_name=_("Face monitor token"))
     is_active = models.BooleanField(default=True, verbose_name=_("Active"))
 
     class Meta:
         ordering = ('-date_expired',)
-        verbose_name = _('Connection token')
         permissions = [
-            ('view_connectiontokensecret', _('Can view connection token secret'))
+            ('expire_connectiontoken', _('Can expire connection token')),
+            ('reuse_connectiontoken', _('Can reuse connection token')),
         ]
+        verbose_name = _('Connection token')
 
     @property
     def is_expired(self):
@@ -73,7 +80,19 @@ class ConnectionToken(JMSOrgBaseModel):
 
     def expire(self):
         self.date_expired = timezone.now()
-        self.save()
+        self.save(update_fields=['date_expired'])
+
+    def set_reusable(self, is_reusable):
+        if not settings.CONNECTION_TOKEN_REUSABLE:
+            return
+        self.is_reusable = is_reusable
+        if self.is_reusable:
+            seconds = settings.CONNECTION_TOKEN_REUSABLE_EXPIRATION
+        else:
+            seconds = settings.CONNECTION_TOKEN_ONETIME_EXPIRATION
+
+        self.date_expired = self.date_created + timedelta(seconds=seconds)
+        self.save(update_fields=['is_reusable', 'date_expired'])
 
     def renewal(self):
         """ 续期 Token，将来支持用户自定义创建 token 后，续期策略要修改 """
@@ -82,10 +101,9 @@ class ConnectionToken(JMSOrgBaseModel):
 
     @lazyproperty
     def permed_account(self):
-        from perms.utils import PermAccountUtil
-        permed_account = PermAccountUtil().validate_permission(
-            self.user, self.asset, self.account
-        )
+        from perms.utils import PermAssetDetailUtil
+        permed_account = PermAssetDetailUtil(self.user, self.asset) \
+            .validate_permission(self.account, self.protocol)
         return permed_account
 
     @lazyproperty
@@ -100,6 +118,7 @@ class ConnectionToken(JMSOrgBaseModel):
         if not self.is_active:
             error = _('Connection token inactive')
             raise PermissionDenied(error)
+
         if self.is_expired:
             error = _('Connection token expired at: {}').format(as_current_tz(self.date_expired))
             raise PermissionDenied(error)
@@ -107,9 +126,8 @@ class ConnectionToken(JMSOrgBaseModel):
             error = _('No user or invalid user')
             raise PermissionDenied(error)
         if not self.asset or not self.asset.is_active:
-            is_valid = False
             error = _('No asset or inactive asset')
-            return is_valid, error
+            raise PermissionDenied(error)
         if not self.account:
             error = _('No account')
             raise PermissionDenied(error)
@@ -159,8 +177,18 @@ class ConnectionToken(JMSOrgBaseModel):
             'remoteapplicationname:s': app,
             'alternate shell:s': app,
             'remoteapplicationcmdline:s': cmdline_b64,
+            'disableconnectionsharing:i': '1',
         }
         return options
+
+    def get_virtual_app_option(self):
+        method = self.connect_method_object
+        if not method or method.get('type') != 'virtual_app' or method.get('disabled', False):
+            return None
+        virtual_app = VirtualApp.objects.filter(name=method.get('value')).first()
+        if not virtual_app:
+            return None
+        return virtual_app
 
     def get_applet_option(self):
         method = self.connect_method_object
@@ -171,71 +199,59 @@ class ConnectionToken(JMSOrgBaseModel):
         if not applet:
             return None
 
-        host_account = applet.select_host_account()
+        host_account = applet.select_host_account(self.user, self.asset)
         if not host_account:
-            raise JMSException({'error': 'No host account available'})
+            raise JMSException({'error': 'No host account available, please check the applet, host and account'})
 
-        host, account, lock_key, ttl = bulk_get(host_account, ('host', 'account', 'lock_key', 'ttl'))
-        gateway = host.gateway.select_gateway() if host.domain else None
+        host, account, lock_key = bulk_get(host_account, ('host', 'account', 'lock_key'))
+        gateway = host.domain.select_gateway() if host.domain else None
+        platform = host.platform
 
         data = {
-            'id': account.id,
+            'id': lock_key,
             'applet': applet,
             'host': host,
             'gateway': gateway,
+            'platform': platform,
             'account': account,
             'remote_app_option': self.get_remote_app_option()
         }
-        token_account_relate_key = f'token_account_relate_{account.id}'
-        cache.set(token_account_relate_key, lock_key, ttl)
         return data
 
     @staticmethod
-    def release_applet_account(account_id):
-        token_account_relate_key = f'token_account_relate_{account_id}'
-        lock_key = cache.get(token_account_relate_key)
+    def release_applet_account(lock_key):
         if lock_key:
             cache.delete(lock_key)
-            cache.delete(token_account_relate_key)
             return True
 
     @lazyproperty
     def account_object(self):
-        from accounts.models import Account
         if not self.asset:
             return None
 
-        account = self.asset.accounts.filter(name=self.account).first()
-        if self.account == '@INPUT' or not account:
-            data = {
-                'name': self.account,
-                'username': self.input_username,
-                'secret_type': 'password',
-                'secret': self.input_secret,
-                'su_from': None,
-                'org_id': self.asset.org_id
-            }
+        if self.account.startswith('@'):
+            account = VirtualAccount.get_special_account(
+                self.account, self.user, self.asset, input_username=self.input_username,
+                input_secret=self.input_secret, from_permed=False
+            )
         else:
-            data = {
-                'name': account.name,
-                'username': account.username,
-                'secret_type': account.secret_type,
-                'secret': account.secret or self.input_secret,
-                'su_from': account.su_from,
-                'org_id': account.org_id
-            }
-        return Account(**data)
+            account = self.asset.accounts.filter(name=self.account).first()
+            if not account.secret and self.input_secret:
+                account.secret = self.input_secret
+        return account
 
     @lazyproperty
     def domain(self):
         if not self.asset.platform.domain_enabled:
             return
-        domain = self.asset.domain if self.asset else None
+        if self.asset.platform.name == GATEWAY_NAME:
+            return
+        domain = self.asset.domain if self.asset.domain else None
         return domain
 
     @lazyproperty
     def gateway(self):
-        if not self.asset:
+        if not self.asset or not self.domain:
             return
         return self.asset.gateway
 
@@ -247,11 +263,15 @@ class ConnectionToken(JMSOrgBaseModel):
             'asset': self.asset,
             'account': self.account_object,
         }
-        acls = CommandFilterACL.filter_queryset(**kwargs).valid()
+        with tmp_to_org(self.asset.org_id):
+            acls = CommandFilterACL.filter_queryset(**kwargs).valid()
         return acls
 
 
 class SuperConnectionToken(ConnectionToken):
     class Meta:
         proxy = True
+        permissions = [
+            ('view_superconnectiontokensecret', _('Can view super connection token secret'))
+        ]
         verbose_name = _("Super connection token")

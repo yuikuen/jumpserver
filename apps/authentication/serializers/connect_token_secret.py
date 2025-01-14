@@ -1,11 +1,12 @@
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from rest_framework import serializers
 
 from accounts.const import SecretType
 from accounts.models import Account
 from acls.models import CommandGroup, CommandFilterACL
 from assets.models import Asset, Platform, Gateway, Domain
-from assets.serializers import PlatformSerializer, AssetProtocolsSerializer
+from assets.serializers.asset import AssetProtocolsSerializer
+from assets.serializers.platform import PlatformSerializer
 from common.serializers.fields import LabeledChoiceField
 from common.serializers.fields import ObjectRelatedField
 from orgs.mixins.serializers import OrgResourceModelSerializerMixin
@@ -14,7 +15,8 @@ from users.models import User
 from ..models import ConnectionToken
 
 __all__ = [
-    'ConnectionTokenSecretSerializer', 'ConnectTokenAppletOptionSerializer'
+    'ConnectionTokenSecretSerializer', 'ConnectTokenAppletOptionSerializer',
+    'ConnectTokenVirtualAppOptionSerializer',
 ]
 
 
@@ -26,18 +28,17 @@ class _ConnectionTokenUserSerializer(serializers.ModelSerializer):
 
 class _ConnectionTokenAssetSerializer(serializers.ModelSerializer):
     protocols = AssetProtocolsSerializer(many=True, required=False, label=_('Protocols'))
+    info = serializers.DictField()
 
     class Meta:
         model = Asset
         fields = [
-            'id', 'name', 'address', 'protocols',
-            'category', 'type', 'org_id', 'spec_info',
-            'secret_info',
+            'id', 'name', 'address', 'protocols', 'category',
+            'type', 'org_id', 'info', 'secret_info', 'spec_info'
         ]
 
 
 class _SimpleAccountSerializer(serializers.ModelSerializer):
-    """ Account """
     secret_type = LabeledChoiceField(choices=SecretType.choices, required=False, label=_('Secret type'))
 
     class Meta:
@@ -46,20 +47,28 @@ class _SimpleAccountSerializer(serializers.ModelSerializer):
 
 
 class _ConnectionTokenAccountSerializer(serializers.ModelSerializer):
-    """ Account """
-    su_from = _SimpleAccountSerializer(required=False, label=_('Su from'))
+    su_from = serializers.SerializerMethodField(label=_('Su from'))
     secret_type = LabeledChoiceField(choices=SecretType.choices, required=False, label=_('Secret type'))
 
     class Meta:
         model = Account
         fields = [
-           'id', 'name', 'username', 'secret_type', 'secret', 'su_from', 'privileged'
+            'id', 'name', 'username', 'secret_type',
+            'secret', 'su_from', 'privileged'
         ]
+
+    @staticmethod
+    def get_su_from(account):
+        if not hasattr(account, 'asset'):
+            return {}
+        su_enabled = account.asset.platform.su_enabled
+        su_from = account.su_from
+        if not su_from or not su_enabled:
+            return
+        return _SimpleAccountSerializer(su_from).data
 
 
 class _ConnectionTokenGatewaySerializer(serializers.ModelSerializer):
-    """ Gateway """
-
     account = _SimpleAccountSerializer(
         required=False, source='select_account', read_only=True
     )
@@ -85,7 +94,8 @@ class _ConnectionTokenCommandFilterACLSerializer(serializers.ModelSerializer):
     class Meta:
         model = CommandFilterACL
         fields = [
-            'id', 'name', 'command_groups', 'action', 'reviewers', 'priority', 'is_active'
+            'id', 'name', 'command_groups', 'action',
+            'reviewers', 'priority', 'is_active'
         ]
 
 
@@ -127,6 +137,7 @@ class ConnectionTokenSecretSerializer(OrgResourceModelSerializerMixin):
     command_filter_acls = _ConnectionTokenCommandFilterACLSerializer(read_only=True, many=True)
     expire_now = serializers.BooleanField(label=_('Expired now'), write_only=True, default=True)
     connect_method = _ConnectTokenConnectMethodSerializer(read_only=True, source='connect_method_object')
+    connect_options = serializers.JSONField(read_only=True)
     actions = ActionChoicesField()
     expire_at = serializers.IntegerField()
 
@@ -136,10 +147,11 @@ class ConnectionTokenSecretSerializer(OrgResourceModelSerializerMixin):
             'id', 'value', 'user', 'asset', 'account',
             'platform', 'command_filter_acls', 'protocol',
             'domain', 'gateway', 'actions', 'expire_at',
-            'from_ticket',
-            'expire_now', 'connect_method',
+            'from_ticket', 'expire_now', 'connect_method',
+            'connect_options', 'face_monitor_token'
         ]
         extra_kwargs = {
+            'face_monitor_token': {'read_only': True},
             'value': {'read_only': True},
         }
 
@@ -150,4 +162,12 @@ class ConnectTokenAppletOptionSerializer(serializers.Serializer):
     host = _ConnectionTokenAssetSerializer(read_only=True)
     account = _ConnectionTokenAccountSerializer(read_only=True)
     gateway = _ConnectionTokenGatewaySerializer(read_only=True)
+    platform = _ConnectionTokenPlatformSerializer(read_only=True)
     remote_app_option = serializers.JSONField(read_only=True)
+
+
+class ConnectTokenVirtualAppOptionSerializer(serializers.Serializer):
+    name = serializers.CharField(label=_('Name'))
+    image_name = serializers.CharField(label=_('Image name'))
+    image_port = serializers.IntegerField(label=_('Image port'))
+    image_protocol = serializers.CharField(label=_('Image protocol'))

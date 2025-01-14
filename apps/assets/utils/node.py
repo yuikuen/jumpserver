@@ -2,7 +2,8 @@
 #
 from collections import defaultdict
 
-from common.db.models import output_as_string
+from django.db.models import F
+
 from common.struct import Stack
 from common.utils import get_logger, dict_get_any, is_uuid, get_object_or_none, timeit
 from common.utils.http import is_true
@@ -17,8 +18,9 @@ logger = get_logger(__file__)
 @ensure_in_real_or_default_org
 def check_node_assets_amount():
     logger.info(f'Check node assets amount {current_org}')
+    m2m_model = Asset.nodes.through
     nodes = list(Node.objects.all().only('id', 'key', 'assets_amount'))
-    nodeid_assetid_pairs = list(Asset.nodes.through.objects.all().values_list('node_id', 'asset_id'))
+    nodeid_assetid_pairs = list(m2m_model.objects.all().values_list('node_id', 'asset_id'))
 
     nodekey_assetids_mapper = defaultdict(set)
     nodeid_nodekey_mapper = {}
@@ -127,11 +129,12 @@ class NodeAssetsUtil:
 
         nodes = list(Node.objects.all())
         nodes_assets = Asset.nodes.through.objects.all() \
-            .annotate(aid=output_as_string('asset_id')) \
+            .annotate(aid=F('asset_id')) \
             .values_list('node__key', 'aid')
 
         mapping = defaultdict(set)
         for key, asset_id in nodes_assets:
+            asset_id = str(asset_id)
             mapping[key].add(asset_id)
 
         util = cls(nodes, mapping)

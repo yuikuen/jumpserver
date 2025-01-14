@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 #
+import phonenumbers
 from django.core.exceptions import ObjectDoesNotExist
+from django.db.models import Model
 from django.utils.translation import gettext_lazy as _
 from rest_framework import serializers
 from rest_framework.fields import ChoiceField, empty
 
-from common.db.fields import TreeChoices
-from common.local import add_encrypted_field_set
+from common.db.fields import TreeChoices, JSONManyToManyField as ModelJSONManyToManyField
 from common.utils import decrypt_password
 
 __all__ = [
@@ -17,6 +18,9 @@ __all__ = [
     "BitChoicesField",
     "TreeChoicesField",
     "LabeledMultipleChoiceField",
+    "PhoneField",
+    "JSONManyToManyField",
+    "LabelRelatedField",
 ]
 
 
@@ -42,9 +46,7 @@ class EncryptedField(serializers.CharField):
         if write_only is None:
             write_only = True
         kwargs["write_only"] = write_only
-        encrypted_key = kwargs.pop('encrypted_key', None)
         super().__init__(**kwargs)
-        add_encrypted_field_set(encrypted_key or self.label)
 
     def to_internal_value(self, value):
         value = super().to_internal_value(value)
@@ -52,21 +54,18 @@ class EncryptedField(serializers.CharField):
 
 
 class LabeledChoiceField(ChoiceField):
-    def __init__(self, *args, **kwargs):
-        super(LabeledChoiceField, self).__init__(*args, **kwargs)
-        self.choice_mapper = {
-            key: value for key, value in self.choices.items()
-        }
-
     def to_representation(self, key):
         if key is None:
             return key
-        label = self.choice_mapper.get(key)
+        label = self.choices.get(key, key)
         return {"value": key, "label": label}
 
     def to_internal_value(self, data):
         if isinstance(data, dict):
             data = data.get("value")
+
+        if isinstance(data, str) and "(" in data and data.endswith(")"):
+            data = data.strip(")").split('(')[-1]
         return super(LabeledChoiceField, self).to_internal_value(data)
 
 
@@ -95,6 +94,51 @@ class LabeledMultipleChoiceField(serializers.MultipleChoiceField):
             return data
 
 
+class LabelRelatedField(serializers.RelatedField):
+    def __init__(self, **kwargs):
+        queryset = kwargs.pop("queryset", None)
+        if queryset is None:
+            from labels.models import LabeledResource
+            queryset = LabeledResource.objects.all()
+
+        kwargs = {**kwargs}
+        read_only = kwargs.get("read_only", False)
+        if not read_only:
+            kwargs["queryset"] = queryset
+        super().__init__(**kwargs)
+
+    def to_file_representation(self, value):
+        if value is None:
+            return value
+        return "{}:{}".format(value.get('name'), value.get('value'))
+
+    def to_representation(self, value):
+        if value is None:
+            return value
+        label = value.label
+        if not label:
+            return None
+        return {'id': label.id, 'name': label.name, 'value': label.value, 'color': label.color}
+
+    def to_internal_value(self, data):
+        from labels.models import LabeledResource, Label
+        if data is None:
+            return data
+        if isinstance(data, dict) and (data.get("id") or data.get("pk")):
+            pk = data.get("id") or data.get("pk")
+            label = Label.objects.get(pk=pk)
+        else:
+            if isinstance(data, dict):
+                k = data.get("name")
+                v = data.get("value")
+            elif isinstance(data, str) and ":" in data:
+                k, v = data.split(":", 1)
+            else:
+                raise serializers.ValidationError(_("Invalid data type"))
+            label, __ = Label.objects.get_or_create(name=k, value=v, defaults={'name': k, 'value': v})
+        return LabeledResource(label=label)
+
+
 class ObjectRelatedField(serializers.RelatedField):
     default_error_messages = {
         "required": _("This field is required."),
@@ -116,11 +160,15 @@ class ObjectRelatedField(serializers.RelatedField):
         return data
 
     def to_internal_value(self, data):
+        queryset = self.get_queryset()
+        if isinstance(data, Model):
+            return queryset.get(pk=data.pk)
+
         if not isinstance(data, dict):
             pk = data
         else:
             pk = data.get("id") or data.get("pk") or data.get(self.attrs[0])
-        queryset = self.get_queryset()
+
         try:
             if isinstance(data, bool):
                 raise TypeError
@@ -201,3 +249,55 @@ class BitChoicesField(TreeChoicesField):
         value = self.to_internal_value(data)
         self.run_validators(value)
         return value
+
+
+class PhoneField(serializers.CharField):
+
+    def to_internal_value(self, data):
+        if isinstance(data, dict):
+            code = data.get('code')
+            phone = data.get('phone', '')
+            if code and phone:
+                code = code.replace('+', '')
+                data = '+{}{}'.format(code, phone)
+            else:
+                data = phone
+        if data:
+            try:
+                phone = phonenumbers.parse(data, 'CN')
+                data = '+{}{}'.format(phone.country_code, phone.national_number)
+            except phonenumbers.NumberParseException:
+                data = '+86{}'.format(data)
+
+        return super().to_internal_value(data)
+
+    def to_representation(self, value):
+        try:
+            phone = phonenumbers.parse(value, 'CN')
+            value = {'code': '+%s' % phone.country_code, 'phone': phone.national_number}
+        except phonenumbers.NumberParseException:
+            value = {'code': '+86', 'phone': value}
+        return value
+
+
+class JSONManyToManyField(serializers.JSONField):
+    def to_representation(self, manager):
+        if manager is None:
+            return manager
+        value = manager.value
+        if not isinstance(value, dict):
+            return {"type": "ids", "ids": []}
+        if value.get("type") == "ids":
+            valid_ids = manager.all().values_list("id", flat=True)
+            valid_ids = [str(i) for i in valid_ids]
+            return {"type": "ids", "ids": valid_ids}
+        return value
+
+    def to_internal_value(self, data):
+        if not data:
+            data = {}
+        try:
+            ModelJSONManyToManyField.check_value(data)
+        except ValueError as e:
+            raise serializers.ValidationError(e)
+        return super().to_internal_value(data)

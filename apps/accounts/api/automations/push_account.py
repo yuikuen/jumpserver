@@ -20,9 +20,8 @@ __all__ = [
 
 class PushAccountAutomationViewSet(OrgBulkModelViewSet):
     model = PushAccountAutomation
-    filter_fields = ('name', 'secret_type', 'secret_strategy')
-    search_fields = filter_fields
-    ordering_fields = ('name',)
+    filterset_fields = ('name', 'secret_type', 'secret_strategy')
+    search_fields = filterset_fields
     serializer_class = serializers.PushAccountAutomationSerializer
 
 
@@ -43,6 +42,7 @@ class PushAccountExecutionViewSet(AutomationExecutionViewSet):
 
 class PushAccountRecordViewSet(ChangeSecretRecordViewSet):
     serializer_class = serializers.ChangeSecretRecordSerializer
+    tp = AutomationTypes.push_account
 
     def get_queryset(self):
         return ChangeSecretRecord.objects.filter(

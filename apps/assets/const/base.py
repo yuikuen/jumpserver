@@ -1,13 +1,45 @@
+from django.conf import settings
+from django.db import models
 from django.db.models import TextChoices
+from django.utils.translation import gettext_lazy as _
 
-from jumpserver.utils import has_valid_xpack_license
-from .protocol import Protocol
+
+class Type:
+    def __init__(self, label, value):
+        self.name = value
+        self.label = label
+        self.value = value
+
+    def __str__(self):
+        return self.value
+
+    def __add__(self, other):
+        if isinstance(other, str):
+            return str(str(self) + other)
+        raise TypeError("unsupported operand type(s) for +: '{}' and '{}'".format(
+            type(self), type(other))
+        )
+
+    def __radd__(self, other):
+        if isinstance(other, str):
+            return str(other + str(self))
+        raise TypeError("unsupported operand type(s) for +(r): '{}' and '{}'".format(
+            type(self), type(other))
+        )
+
+
+class FillType(models.TextChoices):
+    no = 'no', _('Disabled')
+    basic = 'basic', _('Basic')
+    script = 'script', _('Script')
 
 
 class BaseType(TextChoices):
     """
-    约束应该考虑代是对平台对限制，避免多余对选项，如: mysql 开启 ssh, 或者开启了也没有作用, 比如 k8s 开启了 domain，目前还不支持
+    约束应该考虑代是对平台对限制，避免多余对选项，如: mysql 开启 ssh,
+    或者开启了也没有作用, 比如 k8s 开启了 domain，目前还不支持
     """
+
     @classmethod
     def get_constrains(cls):
         constrains = {}
@@ -20,10 +52,10 @@ class BaseType(TextChoices):
         protocols_default = protocols.pop('*', {})
         automation_default = automation.pop('*', {})
 
-        for k, v in cls.choices:
+        for k, v in cls.get_choices():
             tp_base = {**base_default, **base.get(k, {})}
             tp_auto = {**automation_default, **automation.get(k, {})}
-            tp_protocols = {**protocols_default, **protocols.get(k, {})}
+            tp_protocols = {**protocols_default, **{'port_from_addr': False}, **protocols.get(k, {})}
             tp_protocols = cls._parse_protocols(tp_protocols, k)
             tp_constrains = {**tp_base, 'protocols': tp_protocols, 'automation': tp_auto}
             constrains[k] = tp_constrains
@@ -31,12 +63,22 @@ class BaseType(TextChoices):
 
     @classmethod
     def _parse_protocols(cls, protocol, tp):
-        settings = Protocol.settings()
+        from .protocol import Protocol
+        _settings = Protocol.settings()
         choices = protocol.get('choices', [])
         if choices == '__self__':
             choices = [tp]
-        protocols = [{'name': name, **settings.get(name, {})} for name in choices]
-        protocols[0]['primary'] = True
+
+        protocols = []
+        for name in choices:
+            protocol = {'name': name, **_settings.get(name, {})}
+            setting = protocol.pop('setting', {})
+            setting_values = {k: v.get('default', None) for k, v in setting.items()}
+            protocol['setting'] = setting_values
+            protocols.append(protocol)
+
+        if protocols:
+            protocols[0]['default'] = True
         return protocols
 
     @classmethod
@@ -56,23 +98,22 @@ class BaseType(TextChoices):
         raise NotImplementedError
 
     @classmethod
-    def get_community_types(cls):
-        raise NotImplementedError
+    def _get_choices_to_types(cls):
+        choices = cls.get_choices()
+        return [Type(label, value) for value, label in choices]
 
     @classmethod
     def get_types(cls):
-        tps = [tp for tp in cls]
-        if not has_valid_xpack_license():
-            tps = cls.get_community_types()
-        return tps
+        return cls._get_choices_to_types()
+
+    @classmethod
+    def get_community_types(cls):
+        return cls._get_choices_to_types()
 
     @classmethod
     def get_choices(cls):
-        tps = cls.get_types()
-        cls_choices = cls.choices
-        return [
-            choice for choice in cls_choices
-            if choice[0] in tps
-        ]
-
-
+        if not settings.XPACK_LICENSE_IS_VALID:
+            choices = [(tp.value, tp.label) for tp in cls.get_community_types()]
+        else:
+            choices = cls.choices
+        return choices

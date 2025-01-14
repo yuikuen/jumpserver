@@ -84,11 +84,12 @@ def expire_caches():
 def perform_db_migrate():
     logging.info("Check database structure change ...")
     logging.info("Migrate model change to database ...")
+
     try:
         management.call_command('migrate')
-    except Exception:
-        logging.error('Perform migrate failed, exit', exc_info=True)
-        sys.exit(11)
+    except Exception as e:
+        logging.error('Perform migrate failed')
+        raise e
 
 
 def collect_static():
@@ -101,7 +102,7 @@ def collect_static():
 
 
 def compile_i18n_file():
-    django_mo_file = os.path.join(BASE_DIR, 'apps', 'locale', 'zh', 'LC_MESSAGES', 'django.mo')
+    django_mo_file = os.path.join(BASE_DIR, 'apps', 'core', 'locale', 'zh', 'LC_MESSAGES', 'django.mo')
     if os.path.exists(django_mo_file):
         return
     os.chdir(os.path.join(BASE_DIR, 'apps'))
@@ -152,10 +153,14 @@ def start_services():
     start_args = []
     if args.daemon:
         start_args.append('--daemon')
-    if args.worker:
-        start_args.extend(['--worker', str(args.worker)])
     if args.force:
         start_args.append('--force')
+    if args.worker:
+        start_args.extend(['--worker', str(args.worker)])
+    else:
+        worker = os.environ.get('CORE_WORKER')
+        if isinstance(worker, str) and worker.isdigit():
+            start_args.extend(['--worker', worker])
 
     try:
         management.call_command(action, *services, *start_args)
@@ -170,7 +175,7 @@ def start_services():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description="""
-        Jumpserver service control tools;
+        JumpServer service control tools;
 
         Example: \r\n
 

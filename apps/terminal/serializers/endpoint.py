@@ -1,8 +1,9 @@
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from rest_framework import serializers
 
 from acls.serializers.rules import ip_group_child_validator, ip_group_help_text
 from common.serializers import BulkModelSerializer
+from common.serializers.fields import ObjectRelatedField
 from ..models import Endpoint, EndpointRule
 from ..utils import db_port_manager
 
@@ -16,7 +17,8 @@ class EndpointSerializer(BulkModelSerializer):
         max_length=128, default=db_port_manager.oracle_port_range, read_only=True,
         label=_('Oracle port range'),
         help_text=_(
-            'Oracle proxy server listen port is dynamic, Each additional Oracle database instance adds a port listener'
+            'Oracle proxy server listen port is dynamic, Each additional Oracle '
+            'database instance adds a port listener'
         )
     )
 
@@ -25,14 +27,19 @@ class EndpointSerializer(BulkModelSerializer):
         fields_mini = ['id', 'name']
         fields_small = [
             'host', 'https_port', 'http_port', 'ssh_port', 'rdp_port',
-            'mysql_port', 'mariadb_port', 'postgresql_port', 'redis_port',
-            'oracle_port_range', 'oracle_port',
+            'mysql_port', 'mariadb_port', 'postgresql_port', 'redis_port', 'vnc_port',
+            'oracle_port_range', 'oracle_port', 'sqlserver_port', 'is_active'
         ]
         fields = fields_mini + fields_small + [
             'comment', 'date_created', 'date_updated', 'created_by'
         ]
         extra_kwargs = {
-            'host': {'help_text': 'Visit IP/host, if empty, use the current request instead'},
+            'host': {'help_text': _(
+                'The host address accessed when connecting to assets, if it is empty, '
+                'the access address of the current browser will be used '
+                '(the default endpoint does not allow modification of the host)'
+            )
+            },
         }
 
     def get_oracle_port(self, obj: Endpoint):
@@ -51,25 +58,36 @@ class EndpointSerializer(BulkModelSerializer):
                 extra_kwargs[field.name] = kwargs
         return extra_kwargs
 
+    def validate_is_active(self, value):
+        if self.instance and str(self.instance.id) == Endpoint.default_id:
+            # 默认端点不能禁用
+            return True
+        else:
+            return value
+
 
 class EndpointRuleSerializer(BulkModelSerializer):
-    _ip_group_help_text = '{} <br> {}'.format(
+    _ip_group_help_text = '{}, {} <br>{}'.format(
+        _('The assets within this IP range, the following endpoint will be used for the connection'),
+        _('If asset IP addresses under different endpoints conflict, use asset labels'),
         ip_group_help_text,
-        _('If asset IP addresses under different endpoints conflict, use asset labels')
     )
     ip_group = serializers.ListField(
-        default=['*'], label=_('IP'), help_text=_ip_group_help_text,
+        default=['*'], label=_('Asset IP'), help_text=_ip_group_help_text,
         child=serializers.CharField(max_length=1024, validators=[ip_group_child_validator])
     )
-    endpoint_display = serializers.ReadOnlyField(source='endpoint.name', label=_('Endpoint'))
+    endpoint = ObjectRelatedField(
+        allow_null=True, required=False, queryset=Endpoint.objects, label=_('Endpoint')
+    )
 
     class Meta:
         model = EndpointRule
         fields_mini = ['id', 'name']
         fields_small = fields_mini + ['ip_group', 'priority']
-        fields_fk = ['endpoint', 'endpoint_display']
+        fields_fk = ['endpoint']
         fields = fields_mini + fields_small + fields_fk + [
-            'comment', 'date_created', 'date_updated', 'created_by'
+            'comment', 'date_created', 'date_updated', 'created_by', 'is_active'
         ]
         extra_kwargs = {
+            'priority': {'default': 50}
         }

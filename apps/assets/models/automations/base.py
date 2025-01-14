@@ -2,23 +2,30 @@ import uuid
 
 from celery import current_task
 from django.db import models
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
 from assets.models.asset import Asset
 from assets.models.node import Node
-from assets.tasks import execute_automation
+from assets.tasks import execute_asset_automation_task
 from common.const.choices import Trigger
 from common.db.fields import EncryptJsonDictTextField
 from ops.mixin import PeriodTaskModelMixin
-from orgs.mixins.models import OrgModelMixin, JMSOrgBaseModel
+from orgs.mixins.models import OrgModelMixin, JMSOrgBaseModel, OrgManager
+
+
+class BaseAutomationManager(OrgManager):
+    pass
 
 
 class BaseAutomation(PeriodTaskModelMixin, JMSOrgBaseModel):
     accounts = models.JSONField(default=list, verbose_name=_("Accounts"))
-    nodes = models.ManyToManyField('assets.Node', blank=True, verbose_name=_("Nodes"))
+    nodes = models.ManyToManyField('assets.Node', blank=True, verbose_name=_("Node"))
     assets = models.ManyToManyField('assets.Asset', blank=True, verbose_name=_("Assets"))
     type = models.CharField(max_length=16, verbose_name=_('Type'))
     is_active = models.BooleanField(default=True, verbose_name=_("Is active"))
+    params = models.JSONField(default=dict, verbose_name=_("Parameters"))
+
+    objects = BaseAutomationManager.from_queryset(models.QuerySet)()
 
     def __str__(self):
         return self.name + '@' + str(self.created_by)
@@ -49,7 +56,7 @@ class BaseAutomation(PeriodTaskModelMixin, JMSOrgBaseModel):
 
     @property
     def execute_task(self):
-        return execute_automation
+        return execute_asset_automation_task
 
     def get_register_task(self):
         name = f"automation_{self.type}_strategy_period_{str(self.id)[:8]}"
@@ -79,6 +86,10 @@ class BaseAutomation(PeriodTaskModelMixin, JMSOrgBaseModel):
     @property
     def executed_amount(self):
         return self.executions.count()
+
+    @property
+    def latest_execution(self):
+        return self.executions.first()
 
     def execute(self, trigger=Trigger.manual):
         try:
@@ -118,19 +129,23 @@ class AutomationExecution(OrgModelMixin):
     )
 
     class Meta:
-        ordering = ('-date_start',)
+        ordering = ('org_id', '-date_start',)
         verbose_name = _('Automation task execution')
 
     @property
     def manager_type(self):
         return self.snapshot['type']
 
-    def get_all_assets(self):
+    def get_all_asset_ids(self):
         node_ids = self.snapshot['nodes']
         asset_ids = self.snapshot['assets']
         nodes = Node.objects.filter(id__in=node_ids)
         node_asset_ids = Node.get_nodes_all_assets(*nodes).values_list('id', flat=True)
         asset_ids = set(list(asset_ids) + list(node_asset_ids))
+        return asset_ids
+
+    def get_all_assets(self):
+        asset_ids = self.get_all_asset_ids()
         return Asset.objects.filter(id__in=asset_ids)
 
     def all_assets_group_by_platform(self):
